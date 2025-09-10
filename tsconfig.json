@@ -1,27 +1,54 @@
 {
   "compilerOptions": {
-    "target": "ES2017",
-    "lib": ["dom", "dom.iterable", "esnext"],
-    "allowJs": true,
-    "skipLibCheck": true,
-    "strict": true,
-    "noEmit": true,
-    "esModuleInterop": true,
-    "module": "esnext",
+    /* JS target & libs */
+    "target": "ES2022",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    /* Modules & resolution */
+    "module": "ESNext",
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
-    "isolatedModules": true,
-    "jsx": "preserve",
+    "verbatimModuleSyntax": false,
+    /* TS ergonomi */
+    "strict": true,
+    "noEmit": true,
     "incremental": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "allowJs": true,
+    /* ESM uyumu */
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    /* Types & Next plugin */
+    "types": [
+      "node"
+    ],
     "plugins": [
       {
         "name": "next"
       }
     ],
+    /* Path alias (senin yapınla uyumlu) */
+    "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
-    }
+      "@/*": [
+        "./src/*"
+      ]
+    },
+    "jsx": "preserve"
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  /* ÖNEMLİ: shims dosyasını include et */
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    "types/shims.d.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
 }

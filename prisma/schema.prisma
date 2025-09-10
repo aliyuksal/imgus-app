@@ -1,0 +1,227 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// ---------- Enums ----------
+enum ImageKind {
+  input
+  output
+}
+
+enum JobStatus {
+  pending
+  queued
+  running
+  succeeded
+  failed
+  canceled
+}
+
+enum JobImageRole {
+  input
+  output
+}
+
+enum CreditReason {
+  signup_bonus
+  purchase
+  job_charge
+  refund
+}
+
+enum PaymentProvider {
+  paytr
+}
+
+enum PaymentStatus {
+  init
+  succeeded
+  failed
+  refunded
+}
+
+/// ---------- Core ----------
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  image         String?
+  emailVerified DateTime?
+  createdAt     DateTime  @default(now())
+  bannedAt      DateTime?
+
+  // relations
+  accounts   Account[]
+  sessions   Session[]
+  wallets    Wallet?
+  images     Image[]
+  jobs       Job[]
+  payments   Payment[]
+  creditLogs CreditLog[]
+
+  @@index([createdAt])
+}
+
+model Wallet {
+  id       String @id @default(cuid())
+  userId   String @unique
+  currency String @default("TRY")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CreditLog {
+  id        String       @id @default(cuid())
+  userId    String
+  delta     Int // kredi artı/eksi (integer)
+  reason    CreditReason
+  refType   String? // "job" | "payment" | ...
+  refId     String?
+  createdAt DateTime     @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([reason, createdAt])
+}
+
+/// Kullanıcının yüklediği ve üretilen görseller
+model Image {
+  id        String    @id @default(cuid())
+  userId    String
+  kind      ImageKind
+  s3Key     String
+  width     Int?
+  height    Int?
+  size      Int? // bytes
+  mime      String?
+  checksum  String?
+  createdAt DateTime  @default(now())
+
+  user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobLinks JobImage[]
+
+  @@unique([userId, s3Key]) // aynı kullanıcı için aynı key olmasın
+  @@index([userId, createdAt])
+  @@index([kind, createdAt])
+}
+
+model Job {
+  id           String    @id @default(cuid())
+  userId       String
+  prompt       String
+  status       JobStatus @default(pending)
+  falRequestId String?   @unique
+  costCredits  Int? // iş bittiğinde kesilecek tutar
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  errorCode    String?
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+
+  user   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  images JobImage[]
+  events JobEvent[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model JobImage {
+  jobId    String
+  imageId  String
+  role     JobImageRole
+  orderIdx Int          @default(0)
+
+  job   Job   @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  image Image @relation(fields: [imageId], references: [id], onDelete: Cascade)
+
+  @@id([jobId, imageId, role])
+  @@index([imageId])
+  @@index([jobId, role, orderIdx])
+}
+
+model JobEvent {
+  id        String   @id @default(cuid())
+  jobId     String
+  type      String // queued | progress | webhook_received | stored_s3 | error | ...
+  payload   Json?
+  createdAt DateTime @default(now())
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, createdAt])
+}
+
+/// Ödeme kayıtları (PayTR web için)
+model Payment {
+  id           String          @id @default(cuid())
+  userId       String
+  provider     PaymentProvider
+  extSessionId String?         @unique // paytr token / oturum id
+  amount       Int // minor unit (kuruş) önerilir
+  currency     String          @default("TRY")
+  status       PaymentStatus   @default(init)
+  createdAt    DateTime        @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+/// ---------- Auth.js (NextAuth) standart modeller ----------
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model AuthEvent {
+  id        String   @id @default(cuid())
+  email     String
+  userId    String? // oturum açtıktan sonra ilişkilendirmek istersen
+  type      String // signin_request | signin_success | signin_fail | bounce
+  ip        String?
+  ua        String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([type, createdAt])
+}
