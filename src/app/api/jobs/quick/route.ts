@@ -1,4 +1,4 @@
-// app/api/jobs/quick/route.ts
+// app/api/jobs/quick/route.ts içeriği
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getServerSession } from "next-auth";

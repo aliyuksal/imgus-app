@@ -1,13 +1,14 @@
-"use client";
+////src/app/studio içeriği
 
+"use client";
 import { useState } from "react";
 
 type GalleryItem = { id: string; thumbUrl: string; createdAt: string; size: number | null };
 
 export default function Studio() {
   const [log, setLog] = useState<string[]>([]);
-  const [imageId, setImageId] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState<string>("Remove background, studio white, soft natural shadows");
+  const [imageIds, setImageIds] = useState<string[]>([]);   // ← çoklu
+  const [prompt, setPrompt] = useState("Remove background, studio white, soft natural shadows");
   const [job, setJob] = useState<{ jobId: string; requestId?: string } | null>(null);
   const [items, setItems] = useState<GalleryItem[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
@@ -15,90 +16,66 @@ export default function Studio() {
 
   const push = (m: string) => setLog((x) => [m, ...x]);
 
+  async function uploadOne(file: File) {
+    // 1) presign
+    const pres = await fetch("/api/uploads/presign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName: file.name, mimeType: file.type }),
+    });
+    const pjson = await pres.json();
+    if (!pres.ok) throw new Error("presign error: " + JSON.stringify(pjson));
+    const { url, s3Key } = pjson;
+
+    // 2) PUT
+    const put = await fetch(url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+    if (!put.ok) throw new Error("put failed: " + put.status + " " + put.statusText);
+
+    // 3) commit
+    const com = await fetch("/api/uploads/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ s3Key, mime: file.type }),
+    });
+    const cjson = await com.json();
+    if (!com.ok) throw new Error("commit failed: " + JSON.stringify(cjson));
+
+    return cjson.id as string; // imageId
+  }
+
   async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
 
     try {
       setBusy(true);
       setLog([]);
       setJob(null);
-      setImageId(null);
       setPreviews([]);
+      setImageIds([]);
 
-      // 1) presign
-      const pres = await fetch("/api/uploads/presign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileName: file.name, mimeType: file.type }),
-      });
-      const pjson = await pres.json();
-      if (!pres.ok) {
-        push("presign error: " + JSON.stringify(pjson));
-        return;
+      // en fazla 4 görsel
+      const selected = files.slice(0, 4);
+
+      const ids: string[] = [];
+      for (const f of selected) {
+        try {
+          const id = await uploadOne(f);
+          ids.push(id);
+          push("✅ committed imageId=" + id);
+        } catch (err: any) {
+          push(String(err?.message ?? err));
+        }
       }
-      const { url, s3Key } = pjson;
-
-      // 2) PUT (S3)
-      const put = await fetch(url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
-      if (!put.ok) {
-        push("put failed: " + put.status + " " + put.statusText);
-        return;
-      }
-
-      // 3) commit
-      const com = await fetch("/api/uploads/commit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ s3Key, mime: file.type }),
-      });
-      const cjson = await com.json();
-      if (!com.ok) {
-        push("commit failed: " + JSON.stringify(cjson));
-        return;
-      }
-
-      setImageId(cjson.id);
-      push("✅ committed imageId=" + cjson.id);
-    } catch (err: any) {
-      push("unexpected error: " + String(err?.message ?? err));
+      setImageIds(ids);
     } finally {
       setBusy(false);
-      (e.target as HTMLInputElement).value = ""; // tekrar seçilebilir olsun
-    }
-  }
-
-  async function createJob() {
-    if (!imageId) return;
-    setBusy(true);
-    try {
-      const r = await fetch("/api/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt,
-          input_image_ids: [imageId],
-          num_images: 1,
-          output_format: "jpeg",
-        }),
-      });
-      const j = await r.json();
-      if (!r.ok) {
-        push("job error: " + JSON.stringify(j));
-        return;
-      }
-      setJob(j);
-      push("🚀 job submitted: " + JSON.stringify(j));
-      push("Webhook gelince sonuçlar gallery'de görünecek.");
-    } catch (e: any) {
-      push("job exception: " + String(e?.message ?? e));
-    } finally {
-      setBusy(false);
+      (e.target as HTMLInputElement).value = "";
     }
   }
 
   async function createJobQuick() {
-    if (!imageId) return;
+    if (imageIds.length === 0) return;
     setBusy(true);
     setPreviews([]);
     try {
@@ -107,16 +84,13 @@ export default function Studio() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt,
-          input_image_ids: [imageId],
+          input_image_ids: imageIds,     // ← çoklu
           num_images: 1,
           output_format: "jpeg",
         }),
       });
       const j = await r.json();
-      if (!r.ok) {
-        push("quick error: " + JSON.stringify(j));
-        return;
-      }
+      if (!r.ok) { push("quick error: " + JSON.stringify(j)); return; }
       setPreviews(j.previewUrls || []);
       push("✅ quick done: " + JSON.stringify({ jobId: j.jobId, outputs: j.outputs }));
     } catch (e: any) {
@@ -126,14 +100,61 @@ export default function Studio() {
     }
   }
 
+  async function createJob() {
+  if (imageIds.length === 0) return;
+  setBusy(true);
+  try {
+    const r = await fetch("/api/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt,
+        input_image_ids: imageIds,
+        num_images: 1,
+        output_format: "jpeg",
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) { push("job error: " + JSON.stringify(j)); return; }
+
+    setJob(j);
+    push("🚀 job submitted: " + JSON.stringify(j));
+
+    // ---- POLLING ----
+    const jobId = j.jobId as string;
+    let tries = 0;
+    const maxTries = 90; // ~3 dakika
+
+    const tick = async () => {
+      tries += 1;
+      const s = await fetch(`/api/jobs/${jobId}`);
+      const sj = await s.json();
+
+      if (sj.status === "succeeded") {
+        setPreviews(sj.outputs?.map((o: any) => o.url) || []);
+        push("✅ job done");
+      } else if (sj.status === "failed") {
+        push("job failed: " + (sj.error || "unknown"));
+      } else if (tries < maxTries) {
+        setTimeout(tick, 2000);
+      } else {
+        push("job still running, stop polling.");
+      }
+    };
+
+    setTimeout(tick, 2000);
+  } catch (e: any) {
+    push("job exception: " + String(e?.message ?? e));
+  } finally {
+    setBusy(false);
+  }
+}
+
   async function refreshGallery() {
     try {
       const r = await fetch("/api/gallery");
       const j = await r.json();
-      if (!r.ok) {
-        push("gallery error: " + JSON.stringify(j));
-        return;
-      }
+      if (!r.ok) { push("gallery error: " + JSON.stringify(j)); return; }
       setItems(j.items as GalleryItem[]);
       push("📸 gallery refreshed (" + (j.items?.length ?? 0) + ")");
     } catch (e: any) {
@@ -147,10 +168,10 @@ export default function Studio() {
         <h1 className="text-2xl font-semibold">Imgus • Studio (Dev Test)</h1>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          {/* LEFT - actions */}
+          {/* LEFT */}
           <div className="rounded-2xl p-4 bg-neutral-900 border border-neutral-800 space-y-4">
             <div className="text-sm text-neutral-300">1) Upload</div>
-            <input type="file" accept="image/*" onChange={onPick} disabled={busy} />
+            <input type="file" accept="image/*" multiple onChange={onPick} disabled={busy} />
 
             <div className="space-y-2">
               <div className="text-sm text-neutral-300">Prompt</div>
@@ -162,27 +183,35 @@ export default function Studio() {
               />
             </div>
 
-            {imageId && (
+            {imageIds.length > 0 && (
               <div className="text-xs text-neutral-400">
-                Last imageId: <code className="text-neutral-200">{imageId}</code>
+                Selected imageIds:
+                <ul className="list-disc pl-4">
+                  {imageIds.map((id) => <li key={id}><code className="text-neutral-200">{id}</code></li>)}
+                </ul>
               </div>
             )}
 
             <div className="flex flex-wrap gap-2">
               <button
                 onClick={createJobQuick}
-                disabled={!imageId || !prompt.trim() || busy}
+                disabled={imageIds.length === 0 || !prompt.trim() || busy}
                 className="px-3 py-2 rounded-lg bg-emerald-400 text-black disabled:opacity-50"
               >
                 2) Run (Quick)
               </button>
-
               <button
                 onClick={createJob}
-                disabled={!imageId || !prompt.trim() || busy}
+                disabled={imageIds.length === 0 || !prompt.trim() || busy}
                 className="px-3 py-2 rounded-lg bg-white text-black disabled:opacity-50"
               >
                 2) Create Job (Queue + Webhook)
+              </button>
+              <button
+                onClick={refreshGallery}
+                className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700"
+              >
+                Refresh Gallery
               </button>
             </div>
 
@@ -198,33 +227,17 @@ export default function Studio() {
 
             {job && (
               <div className="text-xs text-neutral-400 space-y-1">
-                <div>
-                  jobId: <code className="text-neutral-200">{job.jobId}</code>
-                </div>
-                {job.requestId && (
-                  <div>
-                    requestId: <code className="text-neutral-200">{job.requestId}</code>
-                  </div>
-                )}
+                <div>jobId: <code className="text-neutral-200">{job.jobId}</code></div>
+                {job.requestId && <div>requestId: <code className="text-neutral-200">{job.requestId}</code></div>}
               </div>
             )}
-
-            <div className="pt-2 border-t border-neutral-800">
-              <button onClick={refreshGallery} className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700">
-                Refresh Gallery
-              </button>
-            </div>
           </div>
 
-          {/* RIGHT - logs */}
+          {/* RIGHT – logs */}
           <div className="rounded-2xl p-4 bg-neutral-900 border border-neutral-800">
             <div className="text-sm text-neutral-300 mb-2">Logs</div>
             <div className="text-xs space-y-1 max-h-72 overflow-auto">
-              {log.map((l, i) => (
-                <div key={i} className="whitespace-pre-wrap">
-                  {l}
-                </div>
-              ))}
+              {log.map((l, i) => <div key={i} className="whitespace-pre-wrap">{l}</div>)}
             </div>
           </div>
         </div>
@@ -238,9 +251,7 @@ export default function Studio() {
                 <div key={it.id} className="bg-black/30 rounded-xl overflow-hidden border border-neutral-800">
                   <img src={it.thumbUrl} alt={it.id} className="w-full h-32 object-cover" />
                   <div className="p-2 text-[11px] text-neutral-400">
-                    <div>
-                      ID: <code className="break-all">{it.id}</code>
-                    </div>
+                    <div>ID: <code className="break-all">{it.id}</code></div>
                     <div>{new Date(it.createdAt).toLocaleString()}</div>
                   </div>
                 </div>

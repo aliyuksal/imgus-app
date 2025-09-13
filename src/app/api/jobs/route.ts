@@ -1,4 +1,3 @@
-// app/api/jobs/route.ts
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getServerSession } from "next-auth";
@@ -17,25 +16,17 @@ const Body = z.object({
 });
 
 export async function POST(req: Request) {
-  // --- Auth ---
   const session = await getServerSession(authOptions);
   const uid = (session as any)?.user?.id;
   if (!uid) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  // --- Body parse ---
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid body", issues: parsed.error.issues }, { status: 400 });
   }
   const { prompt, input_image_ids, num_images, output_format } = parsed.data;
 
-  // --- Env check (webhook mode) ---
-  const webhookUrl = process.env.FAL_WEBHOOK_URL;
-  if (!webhookUrl) {
-    return NextResponse.json({ error: "FAL_WEBHOOK_URL missing" }, { status: 500 });
-  }
-
-  // --- Input images fetch/verify ---
+  // input doğrula
   const inputs = await prisma.image.findMany({
     where: { id: { in: input_image_ids }, userId: uid, kind: "input" },
     select: { id: true, s3Key: true },
@@ -44,36 +35,26 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Image not found" }, { status: 404 });
   }
 
-  // --- Presigned GET URLs for FAL (short-lived public access) ---
+  // FAL'a gidecek presigned GET'ler
   const image_urls: string[] = [];
   for (const im of inputs) {
-    const url = await presignGetUrl({ key: im.s3Key, expiresIn: 600 });
-    image_urls.push(url);
+    image_urls.push(await presignGetUrl({ key: im.s3Key, expiresIn: 600 }));
   }
 
-  // --- Create job (queued) ---
+  // job create → queued
   const job = await prisma.job.create({
-    data: {
-      userId: uid,
-      prompt,
-      status: "queued",
-      costCredits: null,
-      startedAt: null,
-      finishedAt: null,
-    },
-    select: { id: true },
+    data: { userId: uid, prompt, status: "queued" },
+    select: { id: true, userId: true },
   });
 
-  // --- Link inputs to job ---
   await Promise.all(
     inputs.map((im, idx) =>
-      prisma.jobImage.create({
-        data: { jobId: job.id, imageId: im.id, role: "input", orderIdx: idx },
-      })
+      prisma.jobImage.create({ data: { jobId: job.id, imageId: im.id, role: "input", orderIdx: idx } })
     )
   );
 
-  // --- Move to running and submit to FAL queue ---
+  const webhookUrl = process.env.FAL_WEBHOOK_URL || undefined;
+
   try {
     await prisma.job.update({
       where: { id: job.id },
@@ -82,8 +63,7 @@ export async function POST(req: Request) {
 
     const { request_id } = await fal.queue.submit("fal-ai/nano-banana/edit", {
       input: { prompt, image_urls, num_images, output_format },
-      webhookUrl, // FAL job tamamlanınca buraya POST atacak
-      // logs: true, // istersen aç
+      ...(webhookUrl ? { webhookUrl } : {}), // ← opsiyonel
     });
 
     await prisma.job.update({
@@ -91,9 +71,11 @@ export async function POST(req: Request) {
       data: { falRequestId: request_id },
     });
 
-    return NextResponse.json({ jobId: job.id, requestId: request_id }, { status: 200 });
+    return NextResponse.json(
+      { jobId: job.id, requestId: request_id, mode: webhookUrl ? "webhook" : "poll" },
+      { status: 200 }
+    );
   } catch (err: any) {
-    // FAL submit hatası → job'u failed yap
     await prisma.job.update({
       where: { id: job.id },
       data: {
